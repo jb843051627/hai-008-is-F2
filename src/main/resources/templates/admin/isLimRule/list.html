@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org" xmlns:sec="http://www.pollix.at/thymeleaf/shiro">
+<head>
+    <th:block th:include="include :: header('重大危险源辨识判定线册子')"/>
+</head>
+<body class="pear-container">
+
+<div class="layui-card">
+    <div class="layui-card-body" style="color:#888;font-size:13px;">
+        一行一条：换标准只添行、翻旗，旧行永不删除；让位行只许历史复核按代号调阅，不再参与现评。
+        界值为各档入门门槛（含本数），空着的档不设、顺推下一档。
+    </div>
+</div>
+
+<div class="layui-card">
+    <div class="layui-card-body">
+        <button shiro:hasPermission="is:isLimRule:add"
+                class="pear-btn pear-btn-md pear-btn-success" onclick="openAdd()">
+            <i class="layui-icon layui-icon-add-1"></i> 换标准·添一行
+        </button>
+    </div>
+</div>
+
+<div class="layui-card">
+    <div class="layui-card-body">
+        <table id="rule-table" lay-filter="rule-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="rule-status">
+    {{#  if(d.status===0){ }}<span class="layui-badge layui-bg-green">现行</span>
+    {{#  } else { }}<span class="layui-badge layui-bg-gray">已让位·只查历史</span>{{#  } }}
+</script>
+<script type="text/html" id="rule-source">
+    {{#  if(d.ruleSource===1){ }}市局下发{{#  } else if(d.ruleSource===2){ }}园区自拟{{#  } else { }}—{{#  } }}
+</script>
+<script type="text/html" id="rule-bar">
+    {{#  if(d.status===0){ }}
+    <button shiro:hasPermission="is:isLimRule:add" class="pear-btn pear-btn-warming pear-btn-sm" lay-event="retire">交棒让位</button>
+    {{#  } }}
+</script>
+
+<th:block th:include="include :: footer"/>
+<script>
+    layui.use(['table', 'jquery', 'layer'], function () {
+        let table = layui.table, $ = layui.jquery, layer = layui.layer;
+        let MP = rootPath + "/IsLimRuleController/";
+
+        table.render({
+            elem: '#rule-table',
+            url: MP + 'list',
+            method: 'get',
+            page: true,
+            skin: 'line',
+            cols: [[
+                {field: 'ruleCode', title: '代号', width: 120},
+                {field: 'ruleName', title: '名称', minWidth: 200},
+                {field: 'ruleSource', title: '来源', width: 90, align: 'center', templet: '#rule-source'},
+                {field: 'applyType', title: '适用类别', width: 100, align: 'center'},
+                {field: 'th1Max', title: '一级界值', width: 100, align: 'right'},
+                {field: 'th2Max', title: '二级界值', width: 100, align: 'right'},
+                {field: 'th3Max', title: '三级界值', width: 100, align: 'right'},
+                {field: 'effStart', title: '启用日', width: 170, align: 'center'},
+                {field: 'effEnd', title: '交棒日(不含)', width: 170, align: 'center'},
+                {field: 'priority', title: '顺位', width: 70, align: 'center'},
+                {field: 'status', title: '情形', width: 130, align: 'center', templet: '#rule-status'},
+                {title: '操作', width: 110, align: 'center', fixed: 'right', toolbar: '#rule-bar'}
+            ]]
+        });
+
+        window.openAdd = function () {
+            layer.open({
+                type: 1, title: '判定线入册（添新行，不动旧行）', area: ['520px', '560px'],
+                content:
+                    '<form class="layui-form" style="padding:20px 10px 0 0;" id="rule-form">' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">代号</label>' +
+                    '    <div class="layui-input-block"><input name="ruleCode" class="layui-input" placeholder="SC=市局专号 PZ=园区专号"></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">名称</label>' +
+                    '    <div class="layui-input-block"><input name="ruleName" class="layui-input"></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">来源</label>' +
+                    '    <div class="layui-input-block"><select name="ruleSource"><option value="1">市局下发</option><option value="2">园区自拟</option></select></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">适用类别</label>' +
+                    '    <div class="layui-input-block"><select name="applyType"><option value="">两类通吃</option><option value="生产企业">生产企业</option><option value="储存企业">储存企业</option></select></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">一/二/三级界值</label>' +
+                    '    <div class="layui-input-inline" style="width:100px;"><input name="th1Max" class="layui-input" placeholder="一级空=不设"></div>' +
+                    '    <div class="layui-input-inline" style="width:100px;"><input name="th2Max" class="layui-input" placeholder="二级"></div>' +
+                    '    <div class="layui-input-inline" style="width:100px;"><input name="th3Max" class="layui-input" placeholder="三级"></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">启用日</label>' +
+                    '    <div class="layui-input-block"><input name="effStart" id="rule-start" class="layui-input"></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">顺位</label>' +
+                    '    <div class="layui-input-block"><input name="priority" class="layui-input" value="10"></div></div>' +
+                    '</form>',
+                success: function () { layui.laydate.render({elem: '#rule-start'}); },
+                btn: ['入册', '取消'],
+                yes: function (idx) {
+                    let f = {};
+                    $('#rule-form').serializeArray().forEach(function (p) { if (p.value !== '') f[p.name] = p.value; });
+                    $.post(MP + 'add', f, function (r) {
+                        layer.msg(r.msg, {icon: r.code === 200 ? 1 : 2});
+                        if (r.code === 200) { layer.close(idx); table.reload('rule-table'); }
+                    });
+                }
+            });
+        };
+
+        table.on('tool(rule-table)', function (obj) {
+            if (obj.event === 'retire') {
+                let d = obj.data;
+                layer.prompt({title: '线[' + d.ruleCode + ']交棒日（当天零点起认新线，旧行保留）', value: ''},
+                    function (val, idx) {
+                        $.post(MP + 'retire', {id: d.id, handoverDate: val}, function (r) {
+                            layer.close(idx);
+                            layer.msg(r.msg, {icon: r.code === 200 ? 1 : 2});
+                            if (r.code === 200) table.reload('rule-table');
+                        });
+                    });
+            }
+        });
+    });
+</script>
+</body>
+</html>

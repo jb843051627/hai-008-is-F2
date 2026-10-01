@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org" xmlns:sec="http://www.pollix.at/thymeleaf/shiro">
+<head>
+    <th:block th:include="include :: header('重大危险源辨识名录')"/>
+</head>
+<body class="pear-container">
+
+<!-- 重点监管名录一屏：园区自检屏与市局抽查屏同一个出处，只点算已落锤辨识单 -->
+<div class="layui-card">
+    <div class="layui-card-body">
+        <div class="layui-row layui-col-space10">
+            <div class="layui-col-xs2">
+                <div class="layui-card" style="border-left:4px solid #FF5722;">
+                    <div class="layui-card-header">一级</div>
+                    <div class="layui-card-body">
+                        <span style="font-size:28px;color:#FF5722;" th:text="${roster?.grade1Cnt} ?: 0">0</span> 家
+                    </div>
+                </div>
+            </div>
+            <div class="layui-col-xs2">
+                <div class="layui-card" style="border-left:4px solid #FFB800;">
+                    <div class="layui-card-header">二级</div>
+                    <div class="layui-card-body">
+                        <span style="font-size:28px;color:#FFB800;" th:text="${roster?.grade2Cnt} ?: 0">0</span> 家
+                    </div>
+                </div>
+            </div>
+            <div class="layui-col-xs2">
+                <div class="layui-card" style="border-left:4px solid #1E9FFF;">
+                    <div class="layui-card-header">三级</div>
+                    <div class="layui-card-body">
+                        <span style="font-size:28px;color:#1E9FFF;" th:text="${roster?.grade3Cnt} ?: 0">0</span> 家
+                    </div>
+                </div>
+            </div>
+            <div class="layui-col-xs3">
+                <div class="layui-card">
+                    <div class="layui-card-header">未达临界线 · 不入名录</div>
+                    <div class="layui-card-body">
+                        <span style="font-size:28px;color:#8c8c8c;" th:text="${roster?.belowCnt} ?: 0">0</span> 单
+                    </div>
+                </div>
+            </div>
+            <div class="layui-col-xs3">
+                <div class="layui-card" style="border-left:4px solid #FF5722;">
+                    <div class="layui-card-header">无可用标准（盯办）</div>
+                    <div class="layui-card-body">
+                        <span style="font-size:28px;color:#FF5722;" th:text="${roster?.noStandardCnt} ?: 0">0</span> 单
+                        <div style="font-size:12px;color:#999;" th:text="${roster?.message}"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="layui-card">
+    <div class="layui-card-body">
+        <form class="layui-form" action="">
+            <div class="layui-form-item">
+                <label class="layui-form-label">级别</label>
+                <div class="layui-input-inline" style="width:120px;">
+                    <select name="gradeLevel" class="layui-input">
+                        <option value="">全部</option>
+                        <option value="1">一级</option>
+                        <option value="2">二级</option>
+                        <option value="3">三级</option>
+                        <option value="0">未达临界线</option>
+                    </select>
+                </div>
+                <button class="pear-btn pear-btn-md pear-btn-primary" lay-submit lay-filter="card-query">
+                    <i class="layui-icon layui-icon-search"></i> 查询
+                </button>
+                <button type="reset" class="pear-btn pear-btn-md">
+                    <i class="layui-icon layui-icon-refresh"></i> 重置
+                </button>
+                <button shiro:hasPermission="is:isHazCard:add"
+                        class="pear-btn pear-btn-md pear-btn-success" style="margin-left:16px;"
+                        onclick="openIdentify()">
+                    <i class="layui-icon layui-icon-add-1"></i> 一罐一评开辨识单
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="layui-card">
+    <div class="layui-card-body">
+        <table id="card-table" lay-filter="card-table"></table>
+    </div>
+</div>
+
+<script type="text/html" id="card-grade">
+    {{#  if(d.noStandard===1){ }}<span class="layui-badge">无可用标准</span>
+    {{#  } else if(d.gradeLevel===1){ }}<span class="layui-badge layui-bg-red">一级</span>
+    {{#  } else if(d.gradeLevel===2){ }}<span class="layui-badge layui-bg-orange">二级</span>
+    {{#  } else if(d.gradeLevel===3){ }}<span class="layui-badge layui-bg-blue">三级</span>
+    {{#  } else { }}<span class="layui-badge layui-bg-gray">未达临界线</span>{{#  } }}
+</script>
+
+<script type="text/html" id="card-bar">
+    <button shiro:hasPermission="is:isHazCard:edit" class="pear-btn pear-btn-warming pear-btn-sm" lay-event="review">历史复核</button>
+    <button shiro:hasPermission="is:isHazCard:list" class="pear-btn pear-btn-primary pear-btn-sm" lay-event="reviews">复核记录</button>
+</script>
+
+<th:block th:include="include :: footer"/>
+<script>
+    layui.use(['table', 'form', 'jquery', 'layer'], function () {
+        let table = layui.table, form = layui.form, $ = layui.jquery, layer = layui.layer;
+        let MP = rootPath + "/IsHazCardController/";
+
+        table.render({
+            elem: '#card-table',
+            url: MP + 'list',
+            method: 'get',
+            page: true,
+            skin: 'line',
+            cols: [[
+                {field: 'billNo', title: '辨识单号', width: 150},
+                {field: 'siteNo', title: '企业底档', width: 100},
+                {field: 'identDate', title: '辨识基准日', width: 120, align: 'center'},
+                {field: 'qty', title: '原始储存量(吨)', width: 120, align: 'right'},
+                {field: 'gradeLevel', title: '评定级别', width: 110, align: 'center', templet: '#card-grade'},
+                {field: 'ruleCode', title: '所依线代号', width: 120, align: 'center'},
+                {field: 'ruleEffStart', title: '所依线启用日', width: 170, align: 'center'},
+                {field: 'nodeNo', title: '版本', width: 70, align: 'center'},
+                {title: '操作', width: 190, align: 'center', fixed: 'right', toolbar: '#card-bar'}
+            ]]
+        });
+
+        form.on('submit(card-query)', function (data) {
+            table.reload('card-table', {where: data.field, page: {curr: 1}});
+            return false;
+        });
+
+        // 一罐一评：储存量、辨识基准日都在这里落锤；级别+线代号+启用日写死
+        window.openIdentify = function () {
+            layer.open({
+                type: 1,
+                title: '重大危险源辨识（取线只看辨识基准日，落锤写死）',
+                area: ['480px', '380px'],
+                content:
+                    '<form class="layui-form" style="padding:20px 10px 0 0;" id="ident-form">' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">底档ID</label>' +
+                    '    <div class="layui-input-block"><input name="siteId" class="layui-input" placeholder="0=东湖化工园区 1=城南气体储运"></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">储存量(吨)</label>' +
+                    '    <div class="layui-input-block"><input name="qty" class="layui-input" placeholder="负数/空值/超大怪值退回重录"></div></div>' +
+                    '  <div class="layui-form-item"><label class="layui-form-label">辨识基准日</label>' +
+                    '    <div class="layui-input-block"><input name="identDate" id="ident-date" class="layui-input" placeholder="老罐子补辨识填建成日；空=今天"></div></div>' +
+                    '</form>',
+                success: function () {
+                    layui.laydate.render({elem: '#ident-date'});
+                },
+                btn: ['落锤定级', '取消'],
+                yes: function (idx) {
+                    let f = {};
+                    $('#ident-form').serializeArray().forEach(function (p) { f[p.name] = p.value; });
+                    $.post(MP + 'identify', f, function (r) {
+                        layer.msg(r.msg, {icon: r.code === 200 ? 1 : 2});
+                        if (r.code === 200) { layer.close(idx); table.reload('card-table'); }
+                    });
+                }
+            });
+        };
+
+        table.on('tool(card-table)', function (obj) {
+            let d = obj.data;
+            if (obj.event === 'review') {
+                // 凭原单代号调线重评，结论另存，原单不改
+                $.post(MP + 'review', {id: d.id}, function (r) {
+                    if (r.code !== 200) { layer.msg(r.msg, {icon: 2}); return; }
+                    let v = r.data;
+                    let msg = '原结论：' + (v.origRuleCode || '无可用标准') + ' / ' +
+                        (v.origGradeLevel === null || v.origGradeLevel === undefined ? '—' : v.origGradeLevel) + '级<br>' +
+                        '复核：' + (v.reviewRuleCode || '无可用标准') + ' / ' +
+                        (v.reviewGradeLevel === null || v.reviewGradeLevel === undefined ? '—' : v.reviewGradeLevel) + '级<br>' +
+                        (v.consistent === 1 ? '<span style="color:#5FB878;">结论一致</span>'
+                            : '<span style="color:#FF5722;">结论不一致，两套上下文各留各的，原单未改</span>');
+                    layer.alert(msg, {title: '复核结论 ' + (v.reviewNo || ''), icon: v.consistent === 1 ? 1 : 0});
+                    table.reload('card-table');
+                });
+            } else if (obj.event === 'reviews') {
+                $.get(MP + 'reviews', {id: d.id}, function (r) {
+                    if (r.code !== 200) { layer.msg(r.msg, {icon: 2}); return; }
+                    let html = '<table class="layui-table" style="margin:10px;font-size:12px;"><thead><tr>'
+                        + '<th>复核日</th><th>原线/级</th><th>复核线/级</th><th>一致</th></tr></thead><tbody>';
+                    (r.data || []).forEach(function (v) {
+                        html += '<tr><td>' + (v.reviewDate || '') + '</td>'
+                            + '<td>' + (v.origRuleCode || '无可用标准') + ' / ' +
+                            (v.origGradeLevel === null || v.origGradeLevel === undefined ? '—' : v.origGradeLevel) + '</td>'
+                            + '<td>' + (v.reviewRuleCode || '无可用标准') + ' / ' +
+                            (v.reviewGradeLevel === null || v.reviewGradeLevel === undefined ? '—' : v.reviewGradeLevel) + '</td>'
+                            + '<td>' + (v.consistent === 1 ? '是' : '否') + '</td></tr>';
+                    });
+                    if (!r.data || !r.data.length) { html += '<tr><td colspan="4">暂无复核记录</td></tr>'; }
+                    html += '</tbody></table>';
+                    layer.open({type: 1, title: '历史复核记录（原单不动）', area: ['640px', '420px'], content: html});
+                });
+            }
+        });
+    });
+</script>
+</body>
+</html>

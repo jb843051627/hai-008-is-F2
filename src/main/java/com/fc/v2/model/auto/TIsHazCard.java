@@ -62,15 +62,37 @@ public class TIsHazCard implements Serializable {
     @ApiModelProperty(value = "本年度新增储存量(吨)")
     private BigDecimal fineAmt;
 
+    /** 辨识基准日（取线只认这天；补辨识取建成日） */
+    @TableField("ident_date")
+    @JsonFormat(pattern = "yyyy-MM-dd", timezone = "GMT+8")
+    @ApiModelProperty(value = "辨识基准日（取线只认这天；补辨识取建成日）")
+    private Date identDate;
+
+    /** 评定级别 1一级 2二级 3三级 0未达临界线；NULL=无可用标准 */
+    @TableField("grade_level")
+    @ApiModelProperty(value = "评定级别 1一级 2二级 3三级 0未达临界线；NULL=无可用标准")
+    private Integer gradeLevel;
+
+    /** 所依判定线代号（落锤写死） */
+    @TableField("rule_code")
+    @ApiModelProperty(value = "所依判定线代号（落锤写死）")
+    private String ruleCode;
+
+    /** 所依判定线启用日（落锤写死） */
+    @TableField("rule_eff_start")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+    @ApiModelProperty(value = "所依判定线启用日（落锤写死）")
+    private Date ruleEffStart;
+
+    /** 无可用标准 0否 1是（明写，不许拿临近日期的线凑合） */
+    @TableField("no_standard")
+    @ApiModelProperty(value = "无可用标准 0否 1是（明写，不许拿临近日期的线凑合）")
+    private Integer noStandard;
+
     /** 校验串（随版本次序走） */
     @TableField("content")
     @ApiModelProperty(value = "校验串（随版本次序走）")
     private String content;
-
-    /** 储存量折到的风险保障层级 */
-    @TableField("grade_level")
-    @ApiModelProperty(value = "储存量折到的风险保障层级")
-    private Integer gradeLevel;
 
     /** 进展 0待核对 1已核对 2已压死 */
     @TableField("status")
@@ -163,6 +185,38 @@ public class TIsHazCard implements Serializable {
 
     public void setFineAmt(BigDecimal fineAmt) {
         this.fineAmt = fineAmt;
+    }
+
+    public Date getIdentDate() {
+        return identDate;
+    }
+
+    public void setIdentDate(Date identDate) {
+        this.identDate = identDate;
+    }
+
+    public String getRuleCode() {
+        return ruleCode;
+    }
+
+    public void setRuleCode(String ruleCode) {
+        this.ruleCode = ruleCode;
+    }
+
+    public Date getRuleEffStart() {
+        return ruleEffStart;
+    }
+
+    public void setRuleEffStart(Date ruleEffStart) {
+        this.ruleEffStart = ruleEffStart;
+    }
+
+    public Integer getNoStandard() {
+        return noStandard;
+    }
+
+    public void setNoStandard(Integer noStandard) {
+        this.noStandard = noStandard;
     }
 
     public String getContent() {

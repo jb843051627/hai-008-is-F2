@@ -286,6 +286,9 @@
 	 			<!--忽略测试启动类 -->
 				<configuration>
 					<skip>${surefire.skip}</skip>
+					<!-- 业务时区全系统定死 GMT+8（墙钟口径见 DeadlineRuler/LimRuleRuler），测试 JVM 也钉死，
+					     否则 H2 按本机时区回读 datetime，切换当日边界会错档。 -->
+					<argLine>-Duser.timezone=Asia/Shanghai</argLine>
 				</configuration>
 			</plugin>
 			<!-- jar运行配置 -->

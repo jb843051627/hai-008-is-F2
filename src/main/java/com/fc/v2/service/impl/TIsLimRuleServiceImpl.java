@@ -1,19 +1,24 @@
 package com.fc.v2.service.impl;
 
-import java.math.BigDecimal;
-import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
-
-import org.springframework.stereotype.Service;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fc.v2.mapper.auto.TIsLimRuleMapper;
 import com.fc.v2.model.auto.TIsLimRule;
 import com.fc.v2.service.ITIsLimRuleService;
+import com.fc.v2.service.haz.GradeVerdict;
+import com.fc.v2.service.haz.LimRuleRuler;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.Resource;
+import java.math.BigDecimal;
 
 /**
- * 重大危险源辨识判定线 Service业务层处理（rule-eval 形状）
+ * 重大危险源辨识判定线 Service业务层处理（rule-book 形状）。
+ *
+ * 只管册子取数；取线决胜、空档顺推、等于界值上靠、脏值退回等口径全部在 {@link LimRuleRuler}，
+ * 园区自检屏与市局抽查屏调同一个实现，天然一个口径。
  *
  * @author fuce
  * @date 2026-09-14
@@ -21,32 +26,8 @@ import com.fc.v2.service.ITIsLimRuleService;
 @Service
 public class TIsLimRuleServiceImpl implements ITIsLimRuleService {
 
-    /** 优先级降序；并列按 ruleCode 降序（确定性） */
-    private static final Comparator<TIsLimRule> PRIORITY_THEN_CODE_DESC = new Comparator<TIsLimRule>() {
-        @Override
-        public int compare(TIsLimRule a, TIsLimRule b) {
-            int pa = a.getPriority() == null ? 0 : a.getPriority();
-            int pb = b.getPriority() == null ? 0 : b.getPriority();
-            if (pa != pb) {
-                return pb - pa;
-            }
-            String ca = a.getRuleCode() == null ? "" : a.getRuleCode();
-            String cb = b.getRuleCode() == null ? "" : b.getRuleCode();
-            return cb.compareTo(ca);
-        }
-    };
-
-    @javax.annotation.Resource
+    @Resource
     private TIsLimRuleMapper isLimRuleMapper;
-
-    /**
-     * 时段比较统一走**墙钟字符串**（yyyy-MM-dd HH:mm:ss）+ 字符串绑定：
-     * JDBC 的 serverTimezone 与本机时区不对称，直接把 java.util.Date 作参数会整体偏移，
-     * 使边界判定在"切换当日"这类用例上随机错档（实测踩到）。
-     */
-    private static String ts(Date d) {
-        return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(d);
-    }
 
     @Override
     public TIsLimRule selectTIsLimRuleById(Long id) {
@@ -54,36 +35,129 @@ public class TIsLimRuleServiceImpl implements ITIsLimRuleService {
     }
 
     @Override
-    public List<TIsLimRule> listAvailable(Date at) {
-        if (at == null) {
-            return new java.util.ArrayList<TIsLimRule>();
-        }
-        return this.isLimRuleMapper.selectList(new QueryWrapper<TIsLimRule>().eq("del_flag", 0));
+    public List<TIsLimRule> listBook() {
+        // 现行排前、让位垫后；同情形内按代号、启用日，翻阅册子时历年版本成串。
+        return this.isLimRuleMapper.selectList(new QueryWrapper<TIsLimRule>()
+                .eq("del_flag", 0)
+                .orderByAsc("rule_code", "eff_start"));
     }
 
     @Override
-    public int evaluate(String ruleCode, BigDecimal input, Date at) {
-        if (ruleCode == null || ruleCode.trim().isEmpty() || input == null || at == null) {
-            return 0;
+    public TIsLimRule addRule(TIsLimRule rule) {
+        if (rule == null) {
+            throw new IllegalArgumentException("判定线内容为空，拒登");
         }
-        TIsLimRule rule = findRule(ruleCode, at);
-        return levelOf(rule, input);
+        if (rule.getRuleCode() == null || rule.getRuleCode().trim().isEmpty()) {
+            throw new IllegalArgumentException("判定线代号为空，拒登");
+        }
+        if (rule.getEffStart() == null) {
+            throw new IllegalArgumentException("启用日为空，拒登");
+        }
+        rule.setEffStart(LimRuleRuler.startOfDay(rule.getEffStart()));
+        if (rule.getEffEnd() != null) {
+            rule.setEffEnd(LimRuleRuler.startOfDay(rule.getEffEnd()));
+            if (!rule.getEffEnd().after(rule.getEffStart())) {
+                throw new IllegalArgumentException("交棒日必须晚于启用日，拒登");
+            }
+        }
+        if (rule.getStatus() == null) {
+            rule.setStatus(LimRuleRuler.STATUS_ACTIVE);
+        }
+        rule.setDelFlag(0);
+
+        // 同一代号、同一适用类别的各版本生效窗不许重叠——交棒日必须说得清。
+        for (TIsLimRule old : listBook()) {
+            if (!rule.getRuleCode().equals(old.getRuleCode())) {
+                continue;
+            }
+            boolean sameType = (rule.getApplyType() == null && old.getApplyType() == null)
+                    || (rule.getApplyType() != null && rule.getApplyType().equals(old.getApplyType()));
+            if (!sameType) {
+                continue;
+            }
+            if (windowsOverlap(rule.getEffStart(), rule.getEffEnd(),
+                    old.getEffStart(), old.getEffEnd())) {
+                throw new IllegalArgumentException("与既有版本[" + old.getRuleCode()
+                        + " " + old.getEffStart() + "]生效窗重叠，交棒日说不清，拒登");
+            }
+        }
+        this.isLimRuleMapper.insert(rule);
+        return rule;
+    }
+
+    /** 半开区间 [aStart,aEnd) 与 [bStart,bEnd) 是否重叠；空止=仍现行、永远开放。 */
+    private boolean windowsOverlap(Date aStart, Date aEnd, Date bStart, Date bEnd) {
+        if (aStart == null || bStart == null) {
+            return true;
+        }
+        boolean aBeforeB = aEnd != null && !aEnd.after(bStart);
+        boolean bBeforeA = bEnd != null && !bEnd.after(aStart);
+        return !aBeforeB && !bBeforeA;
     }
 
     @Override
-    public int evaluateTop(BigDecimal input, Date at) {
-        if (input == null || at == null) {
-            return 0;
+    public TIsLimRule retireRule(Long id, Date handoverAt) {
+        if (id == null || handoverAt == null) {
+            throw new IllegalArgumentException("线ID与交棒日都不能为空");
         }
-        if (input.compareTo(BigDecimal.ZERO) < 0
-                || input.compareTo(new BigDecimal("100")) > 0) {
-            return 0;
+        TIsLimRule rule = this.isLimRuleMapper.selectById(id);
+        if (rule == null || (rule.getDelFlag() != null && rule.getDelFlag() != 0)) {
+            throw new IllegalArgumentException("判定线不存在：" + id);
         }
-        List<TIsLimRule> avail = listAvailable(at);
-        if (avail.isEmpty()) {
-            return 0;
+        if (rule.getStatus() != null && rule.getStatus() == LimRuleRuler.STATUS_RETIRED) {
+            throw new IllegalArgumentException("该线已让位，不许重复翻旗");
         }
-        return levelOf(avail.get(0), input);
+        Date day = LimRuleRuler.startOfDay(handoverAt);
+        if (rule.getEffStart() != null && !day.after(rule.getEffStart())) {
+            throw new IllegalArgumentException("交棒日必须晚于启用日");
+        }
+        rule.setEffEnd(day);
+        rule.setStatus(LimRuleRuler.STATUS_RETIRED);
+        this.isLimRuleMapper.updateById(rule);
+        return rule;
+    }
+
+    @Override
+    public TIsLimRule locate(String siteType, Date identDate, Date now) {
+        if (identDate == null) {
+            return null;
+        }
+        Date day = LimRuleRuler.startOfDay(identDate);
+        Date clock = now == null ? new Date() : now;
+        return LimRuleRuler.choose(listBook(), siteType, day, clock);
+    }
+
+    @Override
+    public TIsLimRule locateByCode(String ruleCode, Date identDate) {
+        if (ruleCode == null || identDate == null) {
+            return null;
+        }
+        return LimRuleRuler.chooseByCode(listBook(), ruleCode, LimRuleRuler.startOfDay(identDate));
+    }
+
+    @Override
+    public GradeVerdict evaluate(String siteType, BigDecimal qty, Date identDate, Date now) {
+        if (identDate == null) {
+            throw new IllegalArgumentException("辨识基准日为空，不予定级，退回重录");
+        }
+        Date day = LimRuleRuler.startOfDay(identDate);
+        Date clock = now == null ? new Date() : now;
+        return LimRuleRuler.verdict(listBook(), siteType, qty, day, clock);
+    }
+
+    @Override
+    public GradeVerdict reevaluateByCode(String ruleCode, BigDecimal qty, Date identDate) {
+        // 先拦脏值：复核也不许对怪值给结论。
+        BigDecimal sane = LimRuleRuler.requireSaneQty(qty);
+        if (ruleCode == null || ruleCode.trim().isEmpty() || identDate == null) {
+            return GradeVerdict.noStandard();
+        }
+        TIsLimRule rule = locateByCode(ruleCode, identDate);
+        if (rule == null) {
+            // 原代号在原辨识日已无线可调——明写无可用标准，绝不拿今天的线顶替。
+            return GradeVerdict.noStandard();
+        }
+        return GradeVerdict.graded(rule, LimRuleRuler.grade(rule, sane));
     }
 
     @Override
@@ -92,59 +166,19 @@ public class TIsLimRuleServiceImpl implements ITIsLimRuleService {
             return false;
         }
         TIsLimRule r = this.isLimRuleMapper.selectById(id);
-        return r != null;
+        return r != null
+                && (r.getDelFlag() == null || r.getDelFlag() == 0)
+                && LimRuleRuler.covers(r, at);
     }
 
     @Override
-    public int countAvailable(Date at) {
+    public int countActive(String siteType, Date at) {
         if (at == null) {
             return 0;
         }
-        return this.isLimRuleMapper
-                .selectList(new QueryWrapper<TIsLimRule>().eq("del_flag", 0)).size();
-    }
-
-    private TIsLimRule findRule(String ruleCode, Date at) {
-        List<TIsLimRule> hit = this.isLimRuleMapper.selectList(new QueryWrapper<TIsLimRule>()
-                .eq("del_flag", 0).eq("rule_code", ruleCode));
-        TIsLimRule newest = null;
-        for (TIsLimRule r : hit) {
-            if (newest == null || r.getEffEnd() == null) {
-                newest = r;
-            } else if (newest.getEffEnd() != null && r.getEffEnd().after(newest.getEffEnd())) {
-                newest = r;
-            }
-        }
-        return newest;
-    }
-
-    /** 阈值解析：档案为主、明细覆盖；两者皆缺返回 null（调用方按不可用处理），精度统一 2 位 */
-    private BigDecimal resolveLimit(TIsLimRule r, int tier) {
-        if (tier == 1) {
-            return r.getTh1Max();
-        }
-        if (tier == 2) {
-            return r.getTh2Max();
-        }
-        return r.getTh3Max();
-    }
-
-    /** 档案级默认阈值（明细未维护时的回退来源） */
-    private BigDecimal defaultThreshold(TIsLimRule r, int tier) {
-        return r.getTh1Max();
-    }
-
-    /** 分档：等于上限取高一档 */
-    private int levelOf(TIsLimRule rule, BigDecimal input) {
-        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) <= 0) {
-            return 1;
-        }
-        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) <= 0) {
-            return 2;
-        }
-        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) <= 0) {
-            return 3;
-        }
-        return 4;
+        Date clock = new Date();
+        List<TIsLimRule> hits = LimRuleRuler.effectiveList(
+                listBook(), siteType, LimRuleRuler.startOfDay(at), clock);
+        return hits.size();
     }
 }

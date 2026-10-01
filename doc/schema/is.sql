@@ -53,16 +53,24 @@ CREATE TABLE IF NOT EXISTS t_is_enterprise (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='危化企业底档';
 
+-- 重大危险源辨识单（档案卡）：一罐一评，写过不改。
+-- 用哪条线只看 ident_date（辨识基准日）那天，不看开单的今天：补辨识的老罐子按建成那年有效的线评。
+-- grade_level/rule_code/rule_eff_start 是落锤时的死档，事后复核另起 t_is_haz_card_review，永不回改本单。
+-- grade_level：1/2/3 入名录各档；0 未达临界线、不入名录；NULL 无可用标准（no_standard=1）或脏值退回（不落单）。
 CREATE TABLE IF NOT EXISTS t_is_haz_card (
   id bigint NOT NULL COMMENT '主键',
-  bill_no varchar(64) DEFAULT NULL COMMENT '重大危险源档案卡号',
-  node_no int DEFAULT NULL COMMENT '本卡版本次序',
+  bill_no varchar(64) DEFAULT NULL COMMENT '重大危险源档案卡号（辨识单号）',
+  node_no int DEFAULT NULL COMMENT '本卡版本次序（同一罐多版辨识，只添不改）',
   site_id int DEFAULT NULL COMMENT '所属底档',
   site_no varchar(64) DEFAULT NULL COMMENT '所属底档代号',
-  qty decimal(12,2) DEFAULT NULL COMMENT '本卡储存量(吨)',
+  qty decimal(12,2) DEFAULT NULL COMMENT '原始储存量(吨，报录原样落档)',
   fine_amt decimal(12,2) DEFAULT NULL COMMENT '本年度新增储存量(吨)',
+  ident_date date DEFAULT NULL COMMENT '辨识基准日（取线只认这天；补辨识取建成日）',
+  grade_level int DEFAULT NULL COMMENT '评定级别 1一级 2二级 3三级 0未达临界线；NULL=无可用标准',
+  rule_code varchar(64) DEFAULT NULL COMMENT '所依判定线代号（落锤写死）',
+  rule_eff_start datetime DEFAULT NULL COMMENT '所依判定线启用日（落锤写死）',
+  no_standard int DEFAULT '0' COMMENT '无可用标准 0否 1是（明写，不许拿临近日期的线凑合）',
   content varchar(255) DEFAULT NULL COMMENT '校验串（随版本次序走）',
-  grade_level int DEFAULT NULL COMMENT '储存量折到的风险保障层级',
   status int DEFAULT NULL COMMENT '进展 0待核对 1已核对 2已压死',
   del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
   create_by varchar(64) DEFAULT NULL COMMENT '创建者',
@@ -70,8 +78,39 @@ CREATE TABLE IF NOT EXISTS t_is_haz_card (
   update_by varchar(64) DEFAULT NULL COMMENT '更新者',
   update_time datetime DEFAULT NULL COMMENT '更新时间',
   remark varchar(500) DEFAULT NULL COMMENT '备注',
-  PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='重大危险源档案卡';
+  PRIMARY KEY (id),
+  KEY idx_card_bill (bill_no, node_no),
+  KEY idx_card_grade (grade_level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='重大危险源辨识单（档案卡）';
+
+-- 历史复核：凭原单代号调阅当年那条线重评。原结论与复核结论各留各的代号上下文，谁也不覆盖谁。
+-- 复核只许按原单的 ident_date 取线，不许拿今天的标准改昨天的单。
+CREATE TABLE IF NOT EXISTS t_is_haz_card_review (
+  id bigint NOT NULL COMMENT '主键',
+  review_no varchar(64) DEFAULT NULL COMMENT '复核结论号',
+  card_id bigint NOT NULL COMMENT '被复核辨识单',
+  bill_no varchar(64) DEFAULT NULL COMMENT '被复核辨识单号（抄存）',
+  review_date date DEFAULT NULL COMMENT '复核作业日',
+  qty decimal(12,2) DEFAULT NULL COMMENT '原始储存量抄存（取自原单，不重新采录）',
+  ident_date date DEFAULT NULL COMMENT '辨识基准日抄存（取线仍按这天）',
+  orig_grade_level int DEFAULT NULL COMMENT '原单级别',
+  orig_rule_code varchar(64) DEFAULT NULL COMMENT '原单所依线代号',
+  orig_rule_eff_start datetime DEFAULT NULL COMMENT '原单所依线启用日',
+  review_grade_level int DEFAULT NULL COMMENT '复核级别（凭代号调线重评）',
+  review_rule_code varchar(64) DEFAULT NULL COMMENT '复核对上的线代号（一般与原单同；缺线时为空）',
+  review_rule_eff_start datetime DEFAULT NULL COMMENT '复核对上的线启用日',
+  no_standard int DEFAULT '0' COMMENT '复核时无可用标准 0否 1是',
+  consistent int DEFAULT NULL COMMENT '复核与原结论是否一致 1一致 0不一致',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  update_by varchar(64) DEFAULT NULL COMMENT '更新者',
+  update_time datetime DEFAULT NULL COMMENT '更新时间',
+  remark varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_review_no (review_no),
+  KEY idx_review_card (card_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='辨识单历史复核结论';
 
 -- 隐患源：检查发现、限期整改的隐患。催办条由本表生成；closed=1 表示已销号结案。
 CREATE TABLE IF NOT EXISTS t_is_hazard (
@@ -170,24 +209,33 @@ CREATE TABLE IF NOT EXISTS t_is_haz_task (
   KEY idx_accept_dept (accept_dept_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='隐患整改催办条';
 
+-- 重大危险源辨识判定线册子：一行一条，换标准只添行、翻旗，永不删旧行。
+-- 界值是各档"入门门槛（含本数）"：qty>=th1 一级、>=th2 二级、>=th3 三级；踩着界值算界值上那一档。
+-- 某一档界值为空 = 不设这档（早年老线一级那格常空），顺到下一档继续推，不当断档、不报错。
+-- 生效窗半开区间 [eff_start, eff_end)：交棒日当天起认新线；交棒日当天仍在进程中的跨日单沿用旧线
+-- （旧线管到进程、新线从结局算）。status=1 的让位行只许历史复核按代号调阅，不许再参与现评。
 CREATE TABLE IF NOT EXISTS t_is_lim_rule (
   id bigint NOT NULL COMMENT '主键',
-  rule_code varchar(64) DEFAULT NULL COMMENT '辨识判定线代号',
+  rule_code varchar(64) DEFAULT NULL COMMENT '辨识判定线代号（市局SC专号/园区PZ专号；同代号可有多版，配启用日定位）',
   rule_name varchar(128) DEFAULT NULL COMMENT '判定线名',
-  th1_max decimal(12,2) DEFAULT NULL COMMENT '一级档界值（含）',
-  th2_max decimal(12,2) DEFAULT NULL COMMENT '二级档界值（含）',
-  th3_max decimal(12,2) DEFAULT NULL COMMENT '三级档界值（含）',
-  eff_start datetime DEFAULT NULL COMMENT '启用之日',
-  eff_end datetime DEFAULT NULL COMMENT '交棒之日(不含)',
-  priority int DEFAULT NULL COMMENT '判定线顺位(数值大的先说话)',
-  status int DEFAULT NULL COMMENT '判定线情形 0现行 1已让位',
+  rule_source int DEFAULT NULL COMMENT '代号来源 1市局下发 2园区自拟',
+  apply_type varchar(16) DEFAULT NULL COMMENT '适用企业类别（生产企业/储存企业各管各；空=两类通吃）',
+  th1_max decimal(12,2) DEFAULT NULL COMMENT '一级入门界值（含；空=不设一级档）',
+  th2_max decimal(12,2) DEFAULT NULL COMMENT '二级入门界值（含；空=不设二级档）',
+  th3_max decimal(12,2) DEFAULT NULL COMMENT '三级入门界值（含；空=不设三级档）',
+  eff_start datetime DEFAULT NULL COMMENT '启用之日（辨识基准日落在此刻起算本线）',
+  eff_end datetime DEFAULT NULL COMMENT '交棒之日(不含；空=仍现行)',
+  priority int DEFAULT NULL COMMENT '判定线顺位(数值大的先说话；并列时代号排后者赢)',
+  status int DEFAULT NULL COMMENT '判定线情形 0现行 1已让位(只许查历史)',
   del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
   create_by varchar(64) DEFAULT NULL COMMENT '创建者',
   create_time datetime DEFAULT NULL COMMENT '创建时间',
   update_by varchar(64) DEFAULT NULL COMMENT '更新者',
   update_time datetime DEFAULT NULL COMMENT '更新时间',
   remark varchar(500) DEFAULT NULL COMMENT '备注',
-  PRIMARY KEY (id)
+  PRIMARY KEY (id),
+  KEY idx_rule_code (rule_code),
+  KEY idx_eff_window (eff_start, eff_end)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='重大危险源辨识判定线';
 
 CREATE TABLE IF NOT EXISTS t_is_rect_bill (
@@ -285,3 +333,26 @@ INSERT IGNORE INTO t_is_hazard (id, hazard_no, summary, dept_group, pin_dept_id,
 VALUES (1, 'YH20260001', '东湖化工园区罐区可燃气体报警器失效', 'HW', 1001, '2026-09-30', 0, 0, 'seed', NOW()),
        (2, 'YH20260002', '城南气体储运消防通道堆占（已复查销号）', 'HW', 1002, '2026-09-29', 1, 0, 'seed', NOW()),
        (3, 'YH20260003', '东湖园区动火作业票证缺签', 'QY', 1004, '2026-09-28', 0, 0, 'seed', NOW());
+
+-- 判定线册子（只添行、翻旗，永不删旧行）。
+-- SC=市局下发专号，PZ=园区自拟专号；界值为各档入门门槛（含本数），一级最重。
+-- 2025-01-01 交棒：旧线管到 2024-12-31，新线从 2025-01-01 起算（[起,止) 半开）。
+INSERT IGNORE INTO t_is_lim_rule
+(id, rule_code, rule_name, rule_source, apply_type, th1_max, th2_max, th3_max, eff_start, eff_end, priority, status, del_flag, create_by, create_time, remark)
+VALUES
+-- 早年间入册的老线：一级那格空着——不设一级档，顺到二级继续推。供老罐子按建成年补辨识调阅。
+(101, 'SC1990-P', '老国标生产企业判定线（1990年册）', 1, '生产企业', NULL, 300.00, 100.00,
+ '1990-01-01 00:00:00', '2009-06-01 00:00:00', 10, 1, 0, 'seed', NOW(), '一级档未设，空值顺档'),
+-- 旧国标（去年之前全市在用，线松）
+(102, 'SC2009-P', '旧国标生产企业判定线', 1, '生产企业', 500.00, 200.00, 50.00,
+ '2009-06-01 00:00:00', '2025-01-01 00:00:00', 10, 1, 0, 'seed', NOW(), '已让位，只许历史复核调阅'),
+(103, 'SC2009-S', '旧国标储存企业判定线', 1, '储存企业', 1000.00, 500.00, 100.00,
+ '2009-06-01 00:00:00', '2025-01-01 00:00:00', 10, 1, 0, 'seed', NOW(), '已让位，只许历史复核调阅'),
+-- 现行新国标（去年换册，临界线收紧）
+(104, 'SC2025-P', '新国标生产企业判定线', 1, '生产企业', 300.00, 100.00, 30.00,
+ '2025-01-01 00:00:00', NULL, 10, 0, 0, 'seed', NOW(), '现行'),
+(105, 'SC2025-S', '新国标储存企业判定线', 1, '储存企业', 600.00, 300.00, 60.00,
+ '2025-01-01 00:00:00', NULL, 10, 0, 0, 'seed', NOW(), '现行'),
+-- 园区自拟专号：自我加压，比市局线更紧、顺位更高，储存企业现评听它的
+(106, 'PZ2025-S', '东湖园区储存企业加严判定线', 2, '储存企业', 500.00, 250.00, 50.00,
+ '2025-01-01 00:00:00', NULL, 20, 0, 0, 'seed', NOW(), '园区自拟，顺位高于市局线');
