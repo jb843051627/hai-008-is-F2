@@ -1,6 +1,18 @@
 -- is 工业安全生产隐患管理 -- schema (hai-008)
 -- 列名与基线实体契约（@TableName/@TableField）逐列对齐，改列必须同步实体。
 -- 库：hai_008
+--
+-- 2026-10-01 辨识定级收进系统，已建库环境需补三刀（再跑本文件末尾判定线种子）：
+--   ALTER TABLE t_is_lim_rule
+--     ADD COLUMN source_type int NULL COMMENT '出处 1市局下发 2园区自拟' AFTER rule_name,
+--     ADD COLUMN site_type   varchar(32) NULL COMMENT '适用企业类别(生产企业/储存企业)' AFTER source_type,
+--     ADD UNIQUE KEY uk_rule_code_eff (rule_code, eff_start);
+--   ALTER TABLE t_is_haz_card
+--     ADD COLUMN ident_date      date NULL COMMENT '辨识那天(定级只看这天)' AFTER qty,
+--     ADD COLUMN rule_code       varchar(64) NULL COMMENT '所依判定线代号(写过不改)' AFTER ident_date,
+--     ADD COLUMN rule_eff_start  datetime NULL COMMENT '所依判定线启用日(写过不改)' AFTER rule_code,
+--     ADD UNIQUE KEY uk_bill_no (bill_no);
+--   CREATE TABLE t_is_haz_review（见下，直接执行建表即可）。
 
 CREATE TABLE IF NOT EXISTS t_is_acc_flow (
   id bigint NOT NULL COMMENT '主键',
@@ -55,14 +67,17 @@ CREATE TABLE IF NOT EXISTS t_is_enterprise (
 
 CREATE TABLE IF NOT EXISTS t_is_haz_card (
   id bigint NOT NULL COMMENT '主键',
-  bill_no varchar(64) DEFAULT NULL COMMENT '重大危险源档案卡号',
+  bill_no varchar(64) DEFAULT NULL COMMENT '重大危险源档案卡号(辨识单号)',
   node_no int DEFAULT NULL COMMENT '本卡版本次序',
   site_id int DEFAULT NULL COMMENT '所属底档',
   site_no varchar(64) DEFAULT NULL COMMENT '所属底档代号',
-  qty decimal(12,2) DEFAULT NULL COMMENT '本卡储存量(吨)',
+  qty decimal(12,2) DEFAULT NULL COMMENT '本卡原始储存量(吨,录多少留多少)',
+  ident_date date DEFAULT NULL COMMENT '辨识那天(定级只看这天,补辨识按建成那年;不看今天)',
+  rule_code varchar(64) DEFAULT NULL COMMENT '所依判定线代号(写过不改;无可用线写"无可用标准")',
+  rule_eff_start datetime DEFAULT NULL COMMENT '所依判定线启用日(随单抄存,写过不改)',
   fine_amt decimal(12,2) DEFAULT NULL COMMENT '本年度新增储存量(吨)',
   content varchar(255) DEFAULT NULL COMMENT '校验串（随版本次序走）',
-  grade_level int DEFAULT NULL COMMENT '储存量折到的风险保障层级',
+  grade_level int DEFAULT NULL COMMENT '辨识级别 1/2/3(压线算上一级)/4超三档顶格;无可用标准为空',
   status int DEFAULT NULL COMMENT '进展 0待核对 1已核对 2已压死',
   del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
   create_by varchar(64) DEFAULT NULL COMMENT '创建者',
@@ -70,8 +85,36 @@ CREATE TABLE IF NOT EXISTS t_is_haz_card (
   update_by varchar(64) DEFAULT NULL COMMENT '更新者',
   update_time datetime DEFAULT NULL COMMENT '更新时间',
   remark varchar(500) DEFAULT NULL COMMENT '备注',
-  PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='重大危险源档案卡';
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_bill_no (bill_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='重大危险源档案卡(辨识单:级别/线代号/启用日写死,事后倒查)';
+
+-- 历史复核：凭原单代号调线，在原辨识日重评。不许拿今天的标准改昨天的单；
+-- 原结论上下文（orig_*）与复核结论上下文（review_*）各留各的，互不相冲。
+CREATE TABLE IF NOT EXISTS t_is_haz_review (
+  id bigint NOT NULL COMMENT '主键',
+  card_id bigint DEFAULT NULL COMMENT '所复核辨识单',
+  bill_no varchar(64) DEFAULT NULL COMMENT '辨识单号(抄存)',
+  review_at datetime DEFAULT NULL COMMENT '复核那天',
+  qty decimal(12,2) DEFAULT NULL COMMENT '复核所据原始储存量(抄自原单)',
+  ident_date date DEFAULT NULL COMMENT '原辨识那天(复核就在这天重评,不取今天)',
+  orig_rule_code varchar(64) DEFAULT NULL COMMENT '原单所依线代号',
+  orig_rule_eff_start datetime DEFAULT NULL COMMENT '原单所依线启用日',
+  orig_grade_level int DEFAULT NULL COMMENT '原单级别',
+  review_rule_code varchar(64) DEFAULT NULL COMMENT '复核调起的线代号(查不到写"无可用标准")',
+  review_rule_eff_start datetime DEFAULT NULL COMMENT '复核所调线启用日',
+  review_grade_level int DEFAULT NULL COMMENT '复核级别(无可用标准为空)',
+  same_result int DEFAULT NULL COMMENT '复核结论与原结论是否一致 0不一致 1一致',
+  conclusion varchar(255) DEFAULT NULL COMMENT '复核结论文话',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  update_by varchar(64) DEFAULT NULL COMMENT '更新者',
+  update_time datetime DEFAULT NULL COMMENT '更新时间',
+  remark varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (id),
+  KEY idx_review_card (card_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='重大危险源辨识历史复核';
 
 -- 隐患源：检查发现、限期整改的隐患。催办条由本表生成；closed=1 表示已销号结案。
 CREATE TABLE IF NOT EXISTS t_is_hazard (
@@ -170,16 +213,23 @@ CREATE TABLE IF NOT EXISTS t_is_haz_task (
   KEY idx_accept_dept (accept_dept_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='隐患整改催办条';
 
+-- 重大危险源辨识判定线（册子：一行一条，换标准不删行）。
+-- source_type：1市局下发（专号 SJ-）2园区自拟（专号 YQ-），各占专号。
+-- site_type：适用企业类别，与 t_is_enterprise.site_type 同值，生产企业/储存企业各管各。
+-- 时段半开 [eff_start, eff_end)：交棒当天旧线已不含、新线已含，全市场只认一套。
+-- status=1 让位行只许查历史，不许再参与现评。界值可空：空=不设这档，顺到下一档推，不当断档。
 CREATE TABLE IF NOT EXISTS t_is_lim_rule (
   id bigint NOT NULL COMMENT '主键',
-  rule_code varchar(64) DEFAULT NULL COMMENT '辨识判定线代号',
+  rule_code varchar(64) DEFAULT NULL COMMENT '辨识判定线代号(SJ-市局/YQ-园区各占专号)',
   rule_name varchar(128) DEFAULT NULL COMMENT '判定线名',
-  th1_max decimal(12,2) DEFAULT NULL COMMENT '一级档界值（含）',
-  th2_max decimal(12,2) DEFAULT NULL COMMENT '二级档界值（含）',
-  th3_max decimal(12,2) DEFAULT NULL COMMENT '三级档界值（含）',
-  eff_start datetime DEFAULT NULL COMMENT '启用之日',
-  eff_end datetime DEFAULT NULL COMMENT '交棒之日(不含)',
-  priority int DEFAULT NULL COMMENT '判定线顺位(数值大的先说话)',
+  source_type int DEFAULT NULL COMMENT '出处 1市局下发 2园区自拟',
+  site_type varchar(32) DEFAULT NULL COMMENT '适用企业类别(生产企业/储存企业)',
+  th1_max decimal(12,2) DEFAULT NULL COMMENT '一级档界值(压线算上一级,空=不设本级)',
+  th2_max decimal(12,2) DEFAULT NULL COMMENT '二级档界值(压线算上一级,空=不设本级)',
+  th3_max decimal(12,2) DEFAULT NULL COMMENT '三级档界值(压线算上一级,空=不设本级)',
+  eff_start datetime DEFAULT NULL COMMENT '启用之日(含)',
+  eff_end datetime DEFAULT NULL COMMENT '交棒之日(不含,空=仍现役)',
+  priority int DEFAULT NULL COMMENT '判定线顺位(数值大的先说话,并列看代号排后者)',
   status int DEFAULT NULL COMMENT '判定线情形 0现行 1已让位',
   del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
   create_by varchar(64) DEFAULT NULL COMMENT '创建者',
@@ -187,7 +237,8 @@ CREATE TABLE IF NOT EXISTS t_is_lim_rule (
   update_by varchar(64) DEFAULT NULL COMMENT '更新者',
   update_time datetime DEFAULT NULL COMMENT '更新时间',
   remark varchar(500) DEFAULT NULL COMMENT '备注',
-  PRIMARY KEY (id)
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_rule_code_eff (rule_code, eff_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='重大危险源辨识判定线';
 
 CREATE TABLE IF NOT EXISTS t_is_rect_bill (
@@ -285,3 +336,19 @@ INSERT IGNORE INTO t_is_hazard (id, hazard_no, summary, dept_group, pin_dept_id,
 VALUES (1, 'YH20260001', '东湖化工园区罐区可燃气体报警器失效', 'HW', 1001, '2026-09-30', 0, 0, 'seed', NOW()),
        (2, 'YH20260002', '城南气体储运消防通道堆占（已复查销号）', 'HW', 1002, '2026-09-29', 1, 0, 'seed', NOW()),
        (3, 'YH20260003', '东湖园区动火作业票证缺签', 'QY', 1004, '2026-09-28', 0, 0, 'seed', NOW());
+
+-- 辨识判定线册子（一行一条，换标准不删行）。
+-- 生产企业：2005 老线 → 2014 线 → 2025 收紧新线，交棒日 2025-01-01 当天全市场只认新线；
+-- 2005 线自 2005 年起，2005 年之前建成的老罐子查不到可用线，明写"无可用标准"。
+-- 储存企业：1995 老线一级档空缺（空=不设这档，顺到二级推）→ 2014 线 → 2025 新线。
+-- 2022-06-01..2024-12-31 生产企业另有园区两条并行线（顺位均 20，高于市局 10），
+-- 顺位并列时代号排后的 YQ-2022-B 赢；两线 2025 交棒后均让位，只许查历史。
+INSERT IGNORE INTO t_is_lim_rule (id, rule_code, rule_name, source_type, site_type, th1_max, th2_max, th3_max, eff_start, eff_end, priority, status, del_flag, create_by, create_time, remark)
+VALUES (1, 'SJ-2005',  '市局2005老线（生产）',                   1, '生产企业', 200.00, 500.00, 1000.00, '2005-01-01 00:00:00', '2015-01-01 00:00:00', 10, 1, 0, 'seed', NOW(), '2015-01-01 交棒给 SJ-2014'),
+       (2, 'SJ-2014',  '市局2014线（生产）',                     1, '生产企业', 100.00, 300.00, 500.00,  '2015-01-01 00:00:00', '2025-01-01 00:00:00', 10, 1, 0, 'seed', NOW(), '2025-01-01 交棒给 SJ-2025，临界线收紧'),
+       (3, 'SJ-2025',  '市局2025新线（生产，现行）',             1, '生产企业', 50.00,  200.00, 500.00,  '2025-01-01 00:00:00', NULL,                  10, 0, 0, 'seed', NOW(), '现行现役线'),
+       (4, 'SJ-1995',  '市局1995老线（储存，一级档空缺）',       1, '储存企业', NULL,   200.00, 500.00,  '1995-01-01 00:00:00', '2015-01-01 00:00:00', 5,  1, 0, 'seed', NOW(), '早年入册，一级格空着=不设一级档'),
+       (5, 'SJ-2014S', '市局2014线（储存）',                     1, '储存企业', 100.00, 300.00, 500.00,  '2015-01-01 00:00:00', '2025-01-01 00:00:00', 10, 1, 0, 'seed', NOW(), '2025-01-01 交棒给 SJ-2025S'),
+       (6, 'SJ-2025S', '市局2025新线（储存，现行）',             1, '储存企业', 50.00,  200.00, 500.00,  '2025-01-01 00:00:00', NULL,                  10, 0, 0, 'seed', NOW(), '现行现役线'),
+       (7, 'YQ-2022A', '园区2022并行线A（生产）',                2, '生产企业', 60.00,  180.00, 400.00,  '2022-06-01 00:00:00', '2025-01-01 00:00:00', 20, 1, 0, 'seed', NOW(), '与 YQ-2022B 顺位并列，代号排后者赢'),
+       (8, 'YQ-2022B', '园区2022并行线B（生产，并列时本线赢）',  2, '生产企业', 55.00,  170.00, 380.00,  '2022-06-01 00:00:00', '2025-01-01 00:00:00', 20, 1, 0, 'seed', NOW(), '代号排后，顺位并列时压过 YQ-2022A');

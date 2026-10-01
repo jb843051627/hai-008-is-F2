@@ -1,7 +1,8 @@
 package com.fc.v2.service.impl;
 
 import java.math.BigDecimal;
-import java.util.Comparator;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 
@@ -11,9 +12,16 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.fc.v2.mapper.auto.TIsLimRuleMapper;
 import com.fc.v2.model.auto.TIsLimRule;
 import com.fc.v2.service.ITIsLimRuleService;
+import com.fc.v2.service.haz.HazIdentRuler;
 
 /**
- * 重大危险源辨识判定线 Service业务层处理（rule-eval 形状）
+ * 重大危险源辨识判定线 Service业务层处理（rule-eval 形状）。
+ *
+ * 选线/套档的口径全部在 {@link HazIdentRuler} 一把尺上，本类只管取数与现评/历史的区分：
+ * 现评只取 status=0 现役行；历史凭代号调线，允许 status=1 让位行（只许查历史）。
+ *
+ * 时段比较不把 java.util.Date 直接丢给 JDBC（serverTimezone 与本机时区不对称会整体偏移，
+ * 交棒当天这类边界会错档——既有教训），一律先取数再在内存按 GMT+8 墙钟瞬间比较。
  *
  * @author fuce
  * @date 2026-09-14
@@ -21,32 +29,8 @@ import com.fc.v2.service.ITIsLimRuleService;
 @Service
 public class TIsLimRuleServiceImpl implements ITIsLimRuleService {
 
-    /** 优先级降序；并列按 ruleCode 降序（确定性） */
-    private static final Comparator<TIsLimRule> PRIORITY_THEN_CODE_DESC = new Comparator<TIsLimRule>() {
-        @Override
-        public int compare(TIsLimRule a, TIsLimRule b) {
-            int pa = a.getPriority() == null ? 0 : a.getPriority();
-            int pb = b.getPriority() == null ? 0 : b.getPriority();
-            if (pa != pb) {
-                return pb - pa;
-            }
-            String ca = a.getRuleCode() == null ? "" : a.getRuleCode();
-            String cb = b.getRuleCode() == null ? "" : b.getRuleCode();
-            return cb.compareTo(ca);
-        }
-    };
-
     @javax.annotation.Resource
     private TIsLimRuleMapper isLimRuleMapper;
-
-    /**
-     * 时段比较统一走**墙钟字符串**（yyyy-MM-dd HH:mm:ss）+ 字符串绑定：
-     * JDBC 的 serverTimezone 与本机时区不对称，直接把 java.util.Date 作参数会整体偏移，
-     * 使边界判定在"切换当日"这类用例上随机错档（实测踩到）。
-     */
-    private static String ts(Date d) {
-        return new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(d);
-    }
 
     @Override
     public TIsLimRule selectTIsLimRuleById(Long id) {
@@ -54,36 +38,44 @@ public class TIsLimRuleServiceImpl implements ITIsLimRuleService {
     }
 
     @Override
-    public List<TIsLimRule> listAvailable(Date at) {
+    public TIsLimRule currentRule(String siteType, Date at) {
         if (at == null) {
-            return new java.util.ArrayList<TIsLimRule>();
+            return null;
         }
-        return this.isLimRuleMapper.selectList(new QueryWrapper<TIsLimRule>().eq("del_flag", 0));
+        List<TIsLimRule> active = loadRows(siteType, true);
+        return HazIdentRuler.pickTop(active, at);
     }
 
     @Override
-    public int evaluate(String ruleCode, BigDecimal input, Date at) {
-        if (ruleCode == null || ruleCode.trim().isEmpty() || input == null || at == null) {
-            return 0;
+    public TIsLimRule historicalTop(String siteType, Date at) {
+        if (at == null) {
+            return null;
         }
-        TIsLimRule rule = findRule(ruleCode, at);
-        return levelOf(rule, input);
+        // 补辨识查档：让位行也算——辨识那年它还是现役。生效时段半开区间自然把它挡在交棒之后。
+        List<TIsLimRule> all = loadRows(siteType, false);
+        return HazIdentRuler.pickTop(all, at);
     }
 
     @Override
-    public int evaluateTop(BigDecimal input, Date at) {
-        if (input == null || at == null) {
-            return 0;
+    public TIsLimRule historicalRule(String ruleCode, Date at) {
+        if (ruleCode == null || ruleCode.trim().isEmpty() || at == null) {
+            return null;
         }
-        if (input.compareTo(BigDecimal.ZERO) < 0
-                || input.compareTo(new BigDecimal("100")) > 0) {
-            return 0;
+        // 历史调线不限定 status：换标准不删行，让位行只许查历史，此处正是它唯一的用途。
+        List<TIsLimRule> sameCode = this.isLimRuleMapper.selectList(new QueryWrapper<TIsLimRule>()
+                .eq("del_flag", 0)
+                .eq("rule_code", ruleCode));
+        return HazIdentRuler.pickTop(sameCode, at);
+    }
+
+    @Override
+    public List<TIsLimRule> listAvailable(String siteType, Date at) {
+        if (at == null) {
+            return new ArrayList<>();
         }
-        List<TIsLimRule> avail = listAvailable(at);
-        if (avail.isEmpty()) {
-            return 0;
-        }
-        return levelOf(avail.get(0), input);
+        // 返回口径：在效现役线按决胜序排好，头一条即说了算的。
+        List<TIsLimRule> rows = loadRows(siteType, true);
+        return HazIdentRuler.effectiveOrdered(rows, at);
     }
 
     @Override
@@ -92,59 +84,56 @@ public class TIsLimRuleServiceImpl implements ITIsLimRuleService {
             return false;
         }
         TIsLimRule r = this.isLimRuleMapper.selectById(id);
-        return r != null;
+        if (r == null || r.getDelFlag() == null || r.getDelFlag() != 0) {
+            return false;
+        }
+        if (r.getStatus() == null || r.getStatus() != 0) {
+            return false;
+        }
+        return HazIdentRuler.effectiveAt(r, at);
     }
 
     @Override
-    public int countAvailable(Date at) {
-        if (at == null) {
-            return 0;
-        }
-        return this.isLimRuleMapper
-                .selectList(new QueryWrapper<TIsLimRule>().eq("del_flag", 0)).size();
+    public int countAvailable(String siteType, Date at) {
+        return listAvailable(siteType, at).size();
     }
 
-    private TIsLimRule findRule(String ruleCode, Date at) {
-        List<TIsLimRule> hit = this.isLimRuleMapper.selectList(new QueryWrapper<TIsLimRule>()
-                .eq("del_flag", 0).eq("rule_code", ruleCode));
-        TIsLimRule newest = null;
-        for (TIsLimRule r : hit) {
-            if (newest == null || r.getEffEnd() == null) {
-                newest = r;
-            } else if (newest.getEffEnd() != null && r.getEffEnd().after(newest.getEffEnd())) {
-                newest = r;
-            }
+    @Override
+    public int gradeCurrent(BigDecimal qty, String siteType, Date at) {
+        if (!HazIdentRuler.isQtySane(qty) || at == null) {
+            return HazIdentRuler.GRADE_NONE;
         }
-        return newest;
+        TIsLimRule rule = currentRule(siteType, at);
+        if (rule == null) {
+            return HazIdentRuler.GRADE_NONE;
+        }
+        return HazIdentRuler.gradeOf(rule, qty);
     }
 
-    /** 阈值解析：档案为主、明细覆盖；两者皆缺返回 null（调用方按不可用处理），精度统一 2 位 */
-    private BigDecimal resolveLimit(TIsLimRule r, int tier) {
-        if (tier == 1) {
-            return r.getTh1Max();
+    @Override
+    public int gradeByCode(String ruleCode, BigDecimal qty, Date at) {
+        if (!HazIdentRuler.isQtySane(qty) || at == null) {
+            return HazIdentRuler.GRADE_NONE;
         }
-        if (tier == 2) {
-            return r.getTh2Max();
+        TIsLimRule rule = historicalRule(ruleCode, at);
+        if (rule == null) {
+            return HazIdentRuler.GRADE_NONE;
         }
-        return r.getTh3Max();
+        return HazIdentRuler.gradeOf(rule, qty);
     }
 
-    /** 档案级默认阈值（明细未维护时的回退来源） */
-    private BigDecimal defaultThreshold(TIsLimRule r, int tier) {
-        return r.getTh1Max();
-    }
-
-    /** 分档：等于上限取高一档 */
-    private int levelOf(TIsLimRule rule, BigDecimal input) {
-        if (rule.getTh1Max() != null && input.compareTo(rule.getTh1Max()) <= 0) {
-            return 1;
+    /**
+     * 取册子行。activeOnly=true 只取现役行（现评用）；false 连让位行一起（历史调线另行按代号取）。
+     */
+    private List<TIsLimRule> loadRows(String siteType, boolean activeOnly) {
+        QueryWrapper<TIsLimRule> qw = new QueryWrapper<TIsLimRule>().eq("del_flag", 0);
+        if (siteType != null && !siteType.trim().isEmpty()) {
+            qw.eq("site_type", siteType);
         }
-        if (rule.getTh2Max() != null && input.compareTo(rule.getTh2Max()) <= 0) {
-            return 2;
+        if (activeOnly) {
+            qw.eq("status", 0);
         }
-        if (rule.getTh3Max() != null && input.compareTo(rule.getTh3Max()) <= 0) {
-            return 3;
-        }
-        return 4;
+        List<TIsLimRule> rows = this.isLimRuleMapper.selectList(qw);
+        return rows == null ? Collections.<TIsLimRule>emptyList() : rows;
     }
 }

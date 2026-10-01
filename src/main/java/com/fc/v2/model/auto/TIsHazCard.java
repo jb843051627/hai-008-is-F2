@@ -52,10 +52,27 @@ public class TIsHazCard implements Serializable {
     @ApiModelProperty(value = "所属底档代号")
     private String siteNo;
 
-    /** 本卡储存量(吨) */
+    /** 本卡原始储存量(吨,录多少留多少) */
     @TableField("qty")
-    @ApiModelProperty(value = "本卡储存量(吨)")
+    @ApiModelProperty(value = "本卡原始储存量(吨,录多少留多少)")
     private BigDecimal qty;
+
+    /** 辨识那天(定级只看这天,补辨识按建成那年;不看今天) */
+    @TableField("ident_date")
+    @JsonFormat(pattern = "yyyy-MM-dd", timezone = "GMT+8")
+    @ApiModelProperty(value = "辨识那天(定级只看这天,补辨识按建成那年;不看今天)")
+    private Date identDate;
+
+    /** 所依判定线代号(写过不改;无可用线写"无可用标准") */
+    @TableField("rule_code")
+    @ApiModelProperty(value = "所依判定线代号(写过不改;无可用线写无可用标准)")
+    private String ruleCode;
+
+    /** 所依判定线启用日(随单抄存,写过不改) */
+    @TableField("rule_eff_start")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
+    @ApiModelProperty(value = "所依判定线启用日(随单抄存,写过不改)")
+    private Date ruleEffStart;
 
     /** 本年度新增储存量(吨) */
     @TableField("fine_amt")
@@ -67,9 +84,9 @@ public class TIsHazCard implements Serializable {
     @ApiModelProperty(value = "校验串（随版本次序走）")
     private String content;
 
-    /** 储存量折到的风险保障层级 */
+    /** 辨识级别 1/2/3(压线算上一级)/4超三档顶格;无可用标准为空 */
     @TableField("grade_level")
-    @ApiModelProperty(value = "储存量折到的风险保障层级")
+    @ApiModelProperty(value = "辨识级别 1/2/3(压线算上一级)/4超三档顶格;无可用标准为空")
     private Integer gradeLevel;
 
     /** 进展 0待核对 1已核对 2已压死 */
@@ -155,6 +172,30 @@ public class TIsHazCard implements Serializable {
 
     public void setQty(BigDecimal qty) {
         this.qty = qty;
+    }
+
+    public Date getIdentDate() {
+        return identDate;
+    }
+
+    public void setIdentDate(Date identDate) {
+        this.identDate = identDate;
+    }
+
+    public String getRuleCode() {
+        return ruleCode;
+    }
+
+    public void setRuleCode(String ruleCode) {
+        this.ruleCode = ruleCode;
+    }
+
+    public Date getRuleEffStart() {
+        return ruleEffStart;
+    }
+
+    public void setRuleEffStart(Date ruleEffStart) {
+        this.ruleEffStart = ruleEffStart;
     }
 
     public BigDecimal getFineAmt() {

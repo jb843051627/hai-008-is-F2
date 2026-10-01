@@ -42,31 +42,41 @@ public class TIsLimRule implements Serializable {
     @ApiModelProperty(value = "判定线名")
     private String ruleName;
 
-    /** 一级档界值（含） */
+    /** 出处 1市局下发 2园区自拟 */
+    @TableField("source_type")
+    @ApiModelProperty(value = "出处 1市局下发 2园区自拟")
+    private Integer sourceType;
+
+    /** 适用企业类别(生产企业/储存企业) */
+    @TableField("site_type")
+    @ApiModelProperty(value = "适用企业类别(生产企业/储存企业)")
+    private String siteType;
+
+    /** 一级档界值(压线算上一级,空=不设本级) */
     @TableField("th1_max")
-    @ApiModelProperty(value = "一级档界值（含）")
+    @ApiModelProperty(value = "一级档界值(压线算上一级,空=不设本级)")
     private BigDecimal th1Max;
 
-    /** 二级档界值（含） */
+    /** 二级档界值(压线算上一级,空=不设本级) */
     @TableField("th2_max")
-    @ApiModelProperty(value = "二级档界值（含）")
+    @ApiModelProperty(value = "二级档界值(压线算上一级,空=不设本级)")
     private BigDecimal th2Max;
 
-    /** 三级档界值（含） */
+    /** 三级档界值(压线算上一级,空=不设本级) */
     @TableField("th3_max")
-    @ApiModelProperty(value = "三级档界值（含）")
+    @ApiModelProperty(value = "三级档界值(压线算上一级,空=不设本级)")
     private BigDecimal th3Max;
 
-    /** 启用之日 */
+    /** 启用之日(含) */
     @TableField("eff_start")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
-    @ApiModelProperty(value = "启用之日")
+    @ApiModelProperty(value = "启用之日(含)")
     private Date effStart;
 
-    /** 交棒之日(不含) */
+    /** 交棒之日(不含,空=仍现役) */
     @TableField("eff_end")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
-    @ApiModelProperty(value = "交棒之日(不含)")
+    @ApiModelProperty(value = "交棒之日(不含,空=仍现役)")
     private Date effEnd;
 
     /** 判定线顺位(数值大的先说话) */
@@ -133,6 +143,22 @@ public class TIsLimRule implements Serializable {
 
     public void setRuleName(String ruleName) {
         this.ruleName = ruleName;
+    }
+
+    public Integer getSourceType() {
+        return sourceType;
+    }
+
+    public void setSourceType(Integer sourceType) {
+        this.sourceType = sourceType;
+    }
+
+    public String getSiteType() {
+        return siteType;
+    }
+
+    public void setSiteType(String siteType) {
+        this.siteType = siteType;
     }
 
     public BigDecimal getTh1Max() {
